@@ -1,5 +1,5 @@
 from fastapi import FastAPI, HTTPException
-import mysql.connector
+from pymongo import MongoClient, DESCENDING
 from datetime import datetime
 from pydantic import BaseModel
 from fastapi.responses import Response
@@ -8,56 +8,48 @@ import os
 app = FastAPI()
 
 # Use environment variables for database configuration
-DB_CONFIG = {
-    'host': os.getenv('DB_HOST', 'localhost'),
-    'user': os.getenv('DB_USER', 'root'), 
-    'password': os.getenv('DB_PASSWORD', 'root'), 
-    'database': os.getenv('DB_NAME', 'testdb'),
-    'port': int(os.getenv('DB_PORT', '3306'))
-}
+MONGO_HOST = os.getenv('MONGO_HOST', 'localhost')
+MONGO_PORT = int(os.getenv('MONGO_PORT', '27017'))
+MONGO_USER = os.getenv('MONGO_USER', 'root')
+MONGO_PASSWORD = os.getenv('MONGO_PASSWORD', 'g74QKVXi5T85VoMNfSM44C8KDhdIm7Fi2DzIcsOtxB7CpyJpQCJCwVzPJ7POLiMH')
+DB_NAME = os.getenv('DB_NAME', 'default')
+COLLECTION_NAME = 'sensor_data'
+
+# Construct MongoDB URI
+MONGO_URI = f"mongodb://{MONGO_USER}:{MONGO_PASSWORD}@{MONGO_HOST}:{MONGO_PORT}/{DB_NAME}?authSource=admin"
 
 class SensorData(BaseModel):
     temperature: float
     humidity: float
     device_id: str = "sensor_001"
-    timestamp: str
 
 def get_db_connection():
-    return mysql.connector.connect(**DB_CONFIG)
+    client = MongoClient(MONGO_URI)
+    return client[DB_NAME]
 
 @app.post("/data")
 async def receive_data(data: SensorData):
     try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
+        db = get_db_connection()
+        collection = db[COLLECTION_NAME]
         
-        query = """
-        INSERT INTO sensor_data (temp, humidity, device_id, timestamp) 
-        VALUES (%s, %s, %s, %s)
-        """
+        document = {
+            "temp": data.temperature,
+            "humidity": data.humidity,
+            "device_id": data.device_id,
+            "timestamp": datetime.now()
+        }
         
-        values = (
-            data.temperature, 
-            data.humidity, 
-            data.device_id,
-            data.timestamp
-        )
-        cursor.execute(query, values)
-        
-        conn.commit()
-        cursor.close()
-        conn.close()
+        result = collection.insert_one(document)
         
         print(f"Stored data from {data.device_id}: Temp={data.temperature}, Humidity={data.humidity}")
         
         return {
             "status": "success", 
-            "message": f"Data received and stored from {data.device_id}"
+            "message": f"Data received and stored from {data.device_id}",
+            "id": str(result.inserted_id)
         }
     
-    except mysql.connector.Error as e:
-        print(f"Database error: {e}")
-        raise HTTPException(status_code=500, detail="Database error occurred")
     except Exception as e:
         print(f"Error storing data: {e}")
         raise HTTPException(status_code=500, detail="Error storing sensor data")
@@ -75,19 +67,11 @@ async def health_check():
 async def download_all_data_csv():
     """Download all sensor data as CSV file"""
     try:
-        conn = get_db_connection()
-        cursor = conn.cursor(dictionary=True)
+        db = get_db_connection()
+        collection = db[COLLECTION_NAME]
         
-        query = """
-        SELECT device_id, temp, humidity, timestamp 
-        FROM sensor_data 
-        ORDER BY timestamp DESC
-        """
-        cursor.execute(query)
-        records = cursor.fetchall()
-        
-        cursor.close()
-        conn.close()
+        # Fetch all records sorted by timestamp descending
+        records = list(collection.find({}).sort("timestamp", DESCENDING))
         
         if not records:
             raise HTTPException(status_code=404, detail="No data found")
